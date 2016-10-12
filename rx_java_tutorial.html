@@ -1,0 +1,157 @@
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title> 給 Android 開發者的 RxJava 詳解</title>
+    <link rel="stylesheet" href="skeleton.css">
+    <link rel="stylesheet" href="typo.css">
+    <link rel="stylesheet" href="post.css">
+    <link rel="stylesheet" href="obsidian.css">
+</head>
+<h5 id="toc_9">2) 創建 Observable</h5>
+
+<p>Observable 即被觀察者，它決定什麼時候觸發事件以及觸發怎樣的事件。 RxJava 使用 <code>create()</code> 方法來創建一個 Observable ，並為它定義事件觸發規則：</p>
+
+<pre><code>Observable observable = Observable.create(new Observable.OnSubscribe&lt;String&gt;() {
+    @Override
+    public void call(Subscriber&lt;? super String&gt; subscriber) {
+        subscriber.onNext("Hello");
+        subscriber.onNext("Hi");
+        subscriber.onNext("Aloha");
+        subscriber.onCompleted();
+    }
+});
+</code></pre>
+
+<p>可以看到，這裡傳入了一個 <code>OnSubscribe</code> 物件作為參數。<code>OnSubscribe</code> 會被存儲在返回的 <code>Observable</code> 物件中，它的作用相當於一個計劃表，當 <code>Observable</code> 被訂閱的時候，<code>OnSubscribe</code> 的 <code>call()</code> 方法會自動被調用，事件序列就會依照設定依次觸發（對於上面的代碼，就是觀察者<code>Subscriber</code> 將會被調用三次 <code>onNext()</code> 和一次 <code>onCompleted()</code>）。這樣，由被觀察者調用了觀察者的回調方法，就實現了由被觀察者向觀察者的事件傳遞，即觀察者模式。</p>
+
+<blockquote>
+  <p>這個例子很簡單：事件的內容是字符串，而不是一些複雜的物件；事件的內容是已經定好了的，而不像有的觀察者模式一樣是待確定的（例如網絡請求的結果在請求返回之前是未知的）；所有事件在一瞬間被全部發送出去，而不是夾雜一些確定或不確定的時間間隔或者經過某種觸發器來觸發的。總之，這個例子看起來毫無實用價值。但這是為了便於說明，實質上只要你想，各種各樣的事件發送規則你都可以自己來寫。至於具體怎麼做，後面都會講到，但現在不行。只有把基礎原理先說明白了，上層的運用才能更容易說清楚。</p>
+</blockquote>
+
+<p><code>create()</code> 方法是 RxJava 最基本的創造事件序列的方法。基於這個方法， RxJava 還提供了一些方法用來快捷創建事件隊列，例如：</p>
+
+<ul>
+<li><code>just(T...)</code>: 將傳入的參數依次發送出來。</li>
+</ul>
+
+<pre><code>Observable observable = Observable.just("Hello", "Hi", "Aloha");
+// 將會依次調用：
+// onNext("Hello");
+// onNext("Hi");
+// onNext("Aloha");
+// onCompleted();
+</code></pre>
+
+<ul>
+<li><code>from(T[])</code> / <code>from(Iterable&lt;? extends T&gt;)</code> : 將傳入的陣列或 <code>Iterable</code> 拆分成具體物件後，依次發送出來。</li>
+</ul>
+
+<pre><code>String[] words = {"Hello", "Hi", "Aloha"};
+Observable observable = Observable.from(words);
+// 將會依次調用：
+// onNext("Hello");
+// onNext("Hi");
+// onNext("Aloha");
+// onCompleted();
+</code></pre>
+
+<p>上面 <code>just(T...)</code> 的例子和 <code>from(T[])</code> 的例子，都和之前的 <code>create(OnSubscribe)</code> 的例子是等價的。</p>
+<hr>
+
+<h5 id="toc_19">2) 變換的原理：lift()</h5>
+
+<p>這些變換雖然功能各有不同，但實質上都是<strong>針對事件序列的處理和再發送</strong>。而在 RxJava 的內部，它們是基於同一個基礎的變換方法： <code>lift(Operator)</code>。首先看一下 <code>lift()</code> 的內部實現（僅核心代碼）：</p>
+
+<pre><code>// 注意：這不是 lift() 的源碼，而是將源碼中與性能、兼容性、擴展性有關的代碼剔除後的核心代碼。
+// 如果需要看源碼，可以去 RxJava 的 GitHub 倉庫下載。
+public &lt;R&gt; Observable&lt;R&gt; lift(Operator&lt;? extends R, ? super T&gt; operator) {
+    return Observable.create(new OnSubscribe&lt;R&gt;() {
+        @Override
+        public void call(Subscriber subscriber) {
+            Subscriber newSubscriber = operator.call(subscriber);
+            newSubscriber.onStart();
+            onSubscribe.call(newSubscriber);
+        }
+    });
+}
+</code></pre>
+
+<p>這段代碼很有意思：它生成了一個新的 <code>Observable</code> 並返回，而且創建新 <code>Observable</code> 所用的參數 <code>OnSubscribe</code> 的回調方法 <code>call()</code> 中的實現竟然看起來和前面講過的 <code>Observable.subscribe()</code> 一樣！然而它們並不一樣喲~不一樣的地方關鍵就在於第二行 <code>onSubscribe.call(subscriber)</code> 中的 <strong><code>onSubscribe</code> 所指代的物件不同</strong>（高能預警：接下來的幾句話可能會導致身體的嚴重不適）——</p>
+
+<ul>
+<li><code>subscribe()</code> 中這句話的 <code>onSubscribe</code> 指的是 <code>Observable</code> 中的 <code>onSubscribe</code> 物件，這個沒有問題，但是 <code>lift()</code> 之後的情況就複雜了點。 </li>
+<li>當含有 <code>lift()</code> 時： <br />
+1.<code>lift()</code> 創建了一個 <code>Observable</code> 後，加上之前的原始 <code>Observable</code>，已經有兩個 <code>Observable</code> 了； <br />
+2.而同樣地，新 <code>Observable</code> 裡的新 <code>OnSubscribe</code> 加上之前的原始 <code>Observable</code> 中的原始 <code>OnSubscribe</code>，也就有了兩個 <code>OnSubscribe</code>； <br />
+3.當用戶調用經過 <code>lift()</code> 後的 <code>Observable</code> 的 <code>subscribe()</code> 的時候，使用的是 <code>lift()</code> 所返回的新的 <code>Observable</code> ，於是它所觸發的 <code>onSubscribe.call(subscriber)</code>，也是用的新 <code>Observable</code> 中的新 <code>OnSubscribe</code>，即在 <code>lift()</code> 中生成的那個 <code>OnSubscribe</code>； <br />
+4.而這個新 <code>OnSubscribe</code> 的 <code>call()</code> 方法中的 <code>onSubscribe</code> ，就是指的原始 <code>Observable</code> 中的原始 <code>OnSubscribe</code> ，在這個 <code>call()</code> 方法裡，新 <code>OnSubscribe</code> 利用 <code>operator.call(subscriber)</code> 生成了一個新的 <code>Subscriber</code>（<code>Operator</code> 就是在這裡，通過自己的 <code>call()</code> 方法將新 <code>Subscriber</code> 和原始 <code>Subscriber</code> 進行關聯，並插入自己的『變換』代碼以實現變換），然後利用這個新 <code>Subscriber</code> 向原始 <code>Observable</code> 進行訂閱。 <br />
+這樣就實現了 <code>lift()</code> 過程，有點<strong>像一種代理機制，通過事件攔截和處理實現事件序列的變換。</strong></li>
+</ul>
+
+<p>精簡掉細節的話，也可以這麼說：在 <code>Observable</code> 執行了 <code>lift(Operator)</code> 方法之後，會返回一個新的 <code>Observable</code>，這個新的 <code>Observable</code> 會像一個代理一樣，負責接收原始的 <code>Observable</code> 發出的事件，並在處理後發送給 <code>Subscriber</code>。</p>
+
+<p>如果你更喜歡具象思維，可以看圖：</p>
+
+<p><img src="http://ww1.sinaimg.cn/mw1024/52eb2279jw1f2rxcrna27j20h40d1q4f.jpg" alt="lift() 原理圖" /></p>
+
+<p>或者可以看動圖：</p>
+
+<p><img src="http://ww4.sinaimg.cn/mw1024/52eb2279jw1f2rxcu9f46g20go0cz4qp.gif" alt="lift 原理動圖" /></p>
+
+<p>兩次和多次的 <code>lift()</code> 同理，如下圖：</p>
+
+<p><img src="http://ww1.sinaimg.cn/mw1024/52eb2279jw1f2rxcvophmj20h30hl0v3.jpg" alt="兩次 lift" /></p>
+
+<p>舉一個具體的 <code>Operator</code> 的實現。下面這是一個將事件中的 <code>Integer</code> 物件轉換成 <code>String</code> 的例子，僅供參考：</p>
+
+<pre><code>observable.lift(new Observable.Operator&lt;String, Integer&gt;() {
+    @Override
+    public Subscriber&lt;? super Integer&gt; call(final Subscriber&lt;? super String&gt; subscriber) {
+        // 將事件序列中的 Integer 物件轉換為 String 物件
+        return new Subscriber&lt;Integer&gt;() {
+            @Override
+            public void onNext(Integer integer) {
+                subscriber.onNext("" + integer);
+            }
+
+            @Override
+            public void onCompleted() {
+                subscriber.onCompleted();
+            }
+
+            @Override
+            public void onError(Throwable e) {
+                subscriber.onError(e);
+            }
+        };
+    }
+});
+</code></pre>
+
+<blockquote>
+  <p>講述 <code>lift()</code> 的原理只是為了讓你更好地瞭解 RxJava ，從而可以更好地使用它。然而不管你是否理解了 <code>lift()</code> 的原理，RxJava 都不建議開發者自定義 <code>Operator</code> 來直接使用 <code>lift()</code>，而是建議儘量使用已有的 <code>lift()</code> 包裝方法（如 <code>map()</code> <code>flatMap()</code> 等）進行組合來實現需求，因為直接使用 lift() 非常容易發生一些難以發現的錯誤。</p>
+</blockquote>
+<hr>
+
+<blockquote>
+  <p>下面是RxJava的一些原始碼，取自RxJava，有可能 &lt; &gt;尚未修改</p>
+</blockquote>
+
+<pre><code>
+    /**
+     * Hook to call when an Observable is created.
+     * @param &lt;T&gt; the value type
+     * @param onSubscribe the original OnSubscribe logic
+     * @return the original or replacement OnSubscribe instance
+     */
+    @SuppressWarnings({ "rawtypes", "unchecked" })
+    public static &lt;T&gt; Observable.OnSubscribe&lt;T&gt; onCreate(Observable.OnSubscribe&lt;T&gt; onSubscribe) {
+        Func1&lt;Observable.OnSubscribe, Observable.OnSubscribe&gt; f = onObservableCreate;
+        if (f != null) {
+            return f.call(onSubscribe);
+        }
+        return onSubscribe;
+    }
+    </code></pre>
+</html>
