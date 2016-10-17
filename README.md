@@ -92,6 +92,38 @@ public Subscription subscribe(Subscriber subscriber) {
 3. 將傳入的 `Subscriber` 作為 `Subscription` 返回。這是為了方便 `unsubscribe()`.
 
 
+
+
+##2) 變換的原理：lift()
+
+這些變換雖然功能各有不同，但實質上都是針對事件序列的處理和再發送。而在 RxJava 的內部，它們是基於同一個基礎的變換方法： lift(Operator)。首先看一下 lift() 的內部實現（僅核心代碼）：
+
+```java
+// 注意：這不是 lift() 的源碼，而是將源碼中與性能、兼容性、擴展性有關的代碼剔除後的核心代碼。
+// 如果需要看源碼，可以去 RxJava 的 GitHub 倉庫下載。
+public <R> Observable<R> lift(Operator<? extends R, ? super T> operator) {
+    return Observable.create(new OnSubscribe<R>() {
+        @Override
+        public void call(Subscriber subscriber) {
+            Subscriber newSubscriber = operator.call(subscriber);
+            newSubscriber.onStart();
+            onSubscribe.call(newSubscriber);
+        }
+    });
+}
+```
+
+這段代碼很有意思：它生成了一個新的 Observable 並返回，而且創建新 Observable 所用的參數 OnSubscribe 的回調方法 call() 中的實現竟然看起來和前面講過的 Observable.subscribe() 一樣！然而它們並不一樣喲~不一樣的地方關鍵就在於第二行 onSubscribe.call(subscriber) 中的 onSubscribe **所指代的物件不同**（高能預警：接下來的幾句話可能會導致身體的嚴重不適）——
+
+subscribe() 中這句話的 onSubscribe 指的是 Observable 中的 onSubscribe 物件，這個沒有問題，但是 lift() 之後的情況就複雜了點。
+當含有 lift() 時：
+
+1. lift() 創建了一個 Observable 後，加上之前的原始 Observable，已經有兩個 Observable 了；
+2. 而同樣地，新 Observable 裡的新 OnSubscribe 加上之前的原始 Observable 中的原始 OnSubscribe，也就有了兩個 OnSubscribe；
+3. 當用戶調用經過 lift() 後的 Observable 的 subscribe() 的時候，使用的是 lift() 所返回的新的 Observable ，於是它所觸發的 onSubscribe.call(subscriber)，也是用的新 Observable 中的新 OnSubscribe，即在 lift() 中生成的那個 OnSubscribe；
+4. 而這個新 OnSubscribe 的 call() 方法中的 onSubscribe ，就是指的原始 Observable 中的原始 OnSubscribe ，在這個 call() 方法裡，新 OnSubscribe 利用 operator.call(subscriber) 生成了一個新的 Subscriber（Operator 就是在這裡，通過自己的 call() 方法將新 Subscriber 和原始 Subscriber 進行關聯，並插入自己的『變換』代碼以實現變換），然後利用這個新 Subscriber 向原始 Observable 進行訂閱。
+**這樣就實現了 lift() 過程，有點像一種代理(delegate)機制，通過事件攔截和處理實現事件序列的變換。**
+
 ```java
     /**
      * <strong>This method requires advanced knowledge about building operators; please consider
@@ -126,38 +158,65 @@ public Subscription subscribe(Subscriber subscriber) {
     public final <R> Observable<R> lift(final Operator<? extends R, ? super T> operator) {
         return create(new OnSubscribeLift<T, R>(onSubscribe, operator));
     }
-```
-原始碼上，只有到new OnSubscribeLift<..>(..)。扔物線上的多了一些程式碼
+    /*
+    *  這是分隔線，下面是OnSubscribeLift的程式碼。主要跟扔物線的差異是有try {}
+    */
+    package rx.internal.operators;
 
-##2) 變換的原理：lift()
+    import rx.Observable.*;
+    import rx.Subscriber;
+    import rx.exceptions.Exceptions;
+    import rx.plugins.RxJavaHooks;
 
-這些變換雖然功能各有不同，但實質上都是針對事件序列的處理和再發送。而在 RxJava 的內部，它們是基於同一個基礎的變換方法： lift(Operator)。首先看一下 lift() 的內部實現（僅核心代碼）：
+    /**
+    * Transforms the downstream Subscriber into a Subscriber via an operator
+    * callback and calls the parent OnSubscribe.call() method with it.
+    * @param <T> the source value type
+    * @param <R> the result value type
+    */
+    public final class OnSubscribeLift<T, R> implements OnSubscribe<R> {
 
-```java
-// 注意：這不是 lift() 的源碼，而是將源碼中與性能、兼容性、擴展性有關的代碼剔除後的核心代碼。
-// 如果需要看源碼，可以去 RxJava 的 GitHub 倉庫下載。
-public <R> Observable<R> lift(Operator<? extends R, ? super T> operator) {
-    return Observable.create(new OnSubscribe<R>() {
-        @Override
-        public void call(Subscriber subscriber) {
-            Subscriber newSubscriber = operator.call(subscriber);
-            newSubscriber.onStart();
-            onSubscribe.call(newSubscriber);
+    final OnSubscribe<T> parent;
+
+    final Operator<? extends R, ? super T> operator;
+
+    public OnSubscribeLift(OnSubscribe<T> parent, Operator<? extends R, ? super T> operator) {
+        this.parent = parent;
+        this.operator = operator;
+    }
+
+    @Override
+    public void call(Subscriber<? super R> o) {
+        try {
+            Subscriber<? super T> st = RxJavaHooks.onObservableLift(operator).call(o);
+            try {
+                // new Subscriber created and being subscribed with so 'onStart' it
+                st.onStart();
+                parent.call(st);
+            } catch (Throwable e) {
+                // localized capture of errors rather than it skipping all operators
+                // and ending up in the try/catch of the subscribe method which then
+                // prevents onErrorResumeNext and other similar approaches to error handling
+                Exceptions.throwIfFatal(e);
+                st.onError(e);
+            }
+        } catch (Throwable e) {
+            Exceptions.throwIfFatal(e);
+            // if the lift function failed all we can do is pass the error to the final Subscriber
+            // as we don't have the operator available to us
+            o.onError(e);
         }
-    });
+    }
 }
 ```
 
-這段代碼很有意思：它生成了一個新的 Observable 並返回，而且創建新 Observable 所用的參數 OnSubscribe 的回調方法 call() 中的實現竟然看起來和前面講過的 Observable.subscribe() 一樣！然而它們並不一樣喲~不一樣的地方關鍵就在於第二行 onSubscribe.call(subscriber) 中的 onSubscribe **所指代的物件不同**（高能預警：接下來的幾句話可能會導致身體的嚴重不適）——
-
-subscribe() 中這句話的 onSubscribe 指的是 Observable 中的 onSubscribe 物件，這個沒有問題，但是 lift() 之後的情況就複雜了點。
-當含有 lift() 時：
-
-1. lift() 創建了一個 Observable 後，加上之前的原始 Observable，已經有兩個 Observable 了；
-2. 而同樣地，新 Observable 裡的新 OnSubscribe 加上之前的原始 Observable 中的原始 OnSubscribe，也就有了兩個 OnSubscribe；
-3. 當用戶調用經過 lift() 後的 Observable 的 subscribe() 的時候，使用的是 lift() 所返回的新的 Observable ，於是它所觸發的 onSubscribe.call(subscriber)，也是用的新 Observable 中的新 OnSubscribe，即在 lift() 中生成的那個 OnSubscribe；
-4. 而這個新 OnSubscribe 的 call() 方法中的 onSubscribe ，就是指的原始 Observable 中的原始 OnSubscribe ，在這個 call() 方法裡，新 OnSubscribe 利用 operator.call(subscriber) 生成了一個新的 Subscriber（Operator 就是在這裡，通過自己的 call() 方法將新 Subscriber 和原始 Subscriber 進行關聯，並插入自己的『變換』代碼以實現變換），然後利用這個新 Subscriber 向原始 Observable 進行訂閱。
-這樣就實現了 lift() 過程，有點像一種代理(delegate)機制，通過事件攔截和處理實現事件序列的變換。
+```java
+    * @param <T> the source value type <T> 來源值類別
+    * @param <R> the result value type <R> 果值類別
+```
+原始碼上，只有到new OnSubscribeLift<..>(..)，其他的部份由OnSubscribeLift實作。扔物線上的多了一些程式碼，`@Override public void call(Subscriber subscriber){..};`
+另外`public OnSubscribeLift(OnSubscribe parent, Operator<..> operator){..}`建構子，有把parent 即原來的observable及operator; 另外分開來寫清楚。  
+然後就是`@Override public void call(Subscriber<..> o){}`  
 
 精簡掉細節的話，也可以這麼說：在 Observable 執行了 lift(Operator) 方法之後，會返回一個新的 Observable，這個新的 Observable 會像一個代理一樣，負責接收原始的 Observable 發出的事件，並在處理後發送給 Subscriber。
 
