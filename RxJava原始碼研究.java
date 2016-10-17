@@ -261,3 +261,162 @@ ublic class Observable<T> {
     public final <R> R to(Func1<? super Observable<T>, R> converter) {
         return converter.call(this);
     }
+
+
+    /**
+     * Subscribes to an Observable and ignores {@code onNext} and {@code onCompleted} emissions. If an {@code onError} emission arrives then
+     * {@link OnErrorNotImplementedException} is thrown.
+     * <dl>
+     *  <dd><b>Backpressure:</b><dt>
+     *  <dd>The operator consumes the source {@code Observable} in an unbounded manner (i.e., no
+     *  backpressure is applied to it).</dd>
+     *  <dt><b>Scheduler:</b></dt>
+     *  <dd>{@code subscribe} does not operate by default on a particular {@link Scheduler}.</dd>
+     * </dl>
+     *
+     * @return a {@link Subscription} reference with which the {@link Observer} can stop receiving items before
+     *         the Observable has finished sending them
+     * @throws OnErrorNotImplementedException
+     *             if the Observable tries to call {@code onError}
+     * @see <a href="http://reactivex.io/documentation/operators/subscribe.html">ReactiveX operators documentation: Subscribe</a>
+     * 這裡的Subscription 是介面，所以subscribe()要返回Subscription的實作實例
+     */
+    public final Subscription subscribe() {
+        Action1<T> onNext = Actions.empty();
+        Action1<Throwable> onError = InternalObservableUtils.ERROR_NOT_IMPLEMENTED;
+        Action0 onCompleted = Actions.empty();
+        return subscribe(new ActionSubscriber<T>(onNext, onError, onCompleted));
+    }
+
+    /**
+     * Subscribes to an Observable and provides a callback to handle the items it emits.
+     * <dl>
+     *  <dd><b>Backpressure:</b><dt>
+     *  <dd>The operator consumes the source {@code Observable} in an unbounded manner (i.e., no
+     *  backpressure is applied to it).</dd>
+     *  <dt><b>Scheduler:</b></dt>
+     *  <dd>{@code subscribe} does not operate by default on a particular {@link Scheduler}.</dd>
+     * </dl>
+     *
+     * @param onNext
+     *             the {@code Action1<T>} you have designed to accept emissions from the Observable
+     * @return a {@link Subscription} reference with which the {@link Observer} can stop receiving items before
+     *         the Observable has finished sending them
+     * @throws IllegalArgumentException
+     *             if {@code onNext} is null
+     * @throws OnErrorNotImplementedException
+     *             if the Observable calls {@code onError}
+     * @see <a href="http://reactivex.io/documentation/operators/subscribe.html">ReactiveX operators documentation: Subscribe</a>
+     */
+    public final Subscription subscribe(final Action1<? super T> onNext) {
+        if (onNext == null) {
+            throw new IllegalArgumentException("onNext can not be null");
+        }
+
+        Action1<Throwable> onError = InternalObservableUtils.ERROR_NOT_IMPLEMENTED;
+        Action0 onCompleted = Actions.empty();
+        return subscribe(new ActionSubscriber<T>(onNext, onError, onCompleted));
+    }
+
+    /**
+     * Subscribes to an Observable and provides callbacks to handle the items it emits and any error
+     * notification it issues.
+     * <dl>
+     *  <dd><b>Backpressure:</b><dt>
+     *  <dd>The operator consumes the source {@code Observable} in an unbounded manner (i.e., no
+     *  backpressure is applied to it).</dd>
+     *  <dt><b>Scheduler:</b></dt>
+     *  <dd>{@code subscribe} does not operate by default on a particular {@link Scheduler}.</dd>
+     * </dl>
+     *
+     * @param onNext
+     *             the {@code Action1<T>} you have designed to accept emissions from the Observable
+     * @param onError
+     *             the {@code Action1<Throwable>} you have designed to accept any error notification from the
+     *             Observable
+     * @return a {@link Subscription} reference with which the {@link Observer} can stop receiving items before
+     *         the Observable has finished sending them
+     * @see <a href="http://reactivex.io/documentation/operators/subscribe.html">ReactiveX operators documentation: Subscribe</a>
+     * @throws IllegalArgumentException
+     *             if {@code onNext} is null, or
+     *             if {@code onError} is null
+     */
+    public final Subscription subscribe(final Action1<? super T> onNext, final Action1<Throwable> onError) {
+        if (onNext == null) {
+            throw new IllegalArgumentException("onNext can not be null");
+        }
+        if (onError == null) {
+            throw new IllegalArgumentException("onError can not be null");
+        }
+
+        Action0 onCompleted = Actions.empty();
+        return subscribe(new ActionSubscriber<T>(onNext, onError, onCompleted));
+    }
+
+    /**
+     * Subscribes to an Observable and provides callbacks to handle the items it emits and any error or
+     * completion notification it issues.
+     * <dl>
+     *  <dd><b>Backpressure:</b><dt>
+     *  <dd>The operator consumes the source {@code Observable} in an unbounded manner (i.e., no
+     *  backpressure is applied to it).</dd>
+     *  <dt><b>Scheduler:</b></dt>
+     *  <dd>{@code subscribe} does not operate by default on a particular {@link Scheduler}.</dd>
+     * </dl>
+     *
+     * @param onNext
+     *             the {@code Action1<T>} you have designed to accept emissions from the Observable
+     * @param onError
+     *             the {@code Action1<Throwable>} you have designed to accept any error notification from the
+     *             Observable
+     * @param onCompleted
+     *             the {@code Action0} you have designed to accept a completion notification from the
+     *             Observable
+     * @return a {@link Subscription} reference with which the {@link Observer} can stop receiving items before
+     *         the Observable has finished sending them
+     * @throws IllegalArgumentException
+     *             if {@code onNext} is null, or
+     *             if {@code onError} is null, or
+     *             if {@code onComplete} is null
+     * @see <a href="http://reactivex.io/documentation/operators/subscribe.html">ReactiveX operators documentation: Subscribe</a>
+     */
+    public final Subscription subscribe(final Action1<? super T> onNext, final Action1<Throwable> onError, final Action0 onCompleted) {
+        if (onNext == null) {
+            throw new IllegalArgumentException("onNext can not be null");
+        }
+        if (onError == null) {
+            throw new IllegalArgumentException("onError can not be null");
+        }
+        if (onCompleted == null) {
+            throw new IllegalArgumentException("onComplete can not be null");
+        }
+
+        return subscribe(new ActionSubscriber<T>(onNext, onError, onCompleted));
+    }
+
+    /**
+     * Subscribes to an Observable and provides an Observer that implements functions to handle the items the
+     * Observable emits and any error or completion notification it issues.
+     * <dl>
+     *  <dd><b>Backpressure:</b><dt>
+     *  <dd>The operator consumes the source {@code Observable} in an unbounded manner (i.e., no
+     *  backpressure is applied to it).</dd>
+     *  <dt><b>Scheduler:</b></dt>
+     *  <dd>{@code subscribe} does not operate by default on a particular {@link Scheduler}.</dd>
+     * </dl>
+     *
+     * @param observer
+     *             the Observer that will handle emissions and notifications from the Observable
+     * @return a {@link Subscription} reference with which the {@link Observer} can stop receiving items before
+     *         the Observable has completed
+     * @see <a href="http://reactivex.io/documentation/operators/subscribe.html">ReactiveX operators documentation: Subscribe</a>
+     */
+    public final Subscription subscribe(final Observer<? super T> observer) {
+        if (observer instanceof Subscriber) {
+            return subscribe((Subscriber<? super T>)observer);
+        }
+        if (observer == null) {
+            throw new NullPointerException("observer is null");
+        }
+        return subscribe(new ObserverSubscriber<T>(observer));
+    }
